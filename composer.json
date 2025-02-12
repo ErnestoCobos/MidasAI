@@ -10,8 +10,10 @@
     "license": "MIT",
     "require": {
         "php": "^8.2",
+        "deepseek-php/deepseek-laravel": "^2.0",
         "laravel/framework": "^11.31",
-        "laravel/tinker": "^2.9"
+        "laravel/tinker": "^2.9",
+        "openai-php/client": "^0.10.3"
     },
     "require-dev": {
         "fakerphp/faker": "^1.23",

@@ -10,24 +10,30 @@ use App\Models\MarketData;
 use App\Models\SentimentData;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Config;
+use App\Services\AI\DeepSeek\Facades\DeepSeek;
 use Mockery;
 
 class DeepSeekServiceTest extends TestCase
 {
     protected $service;
-    protected $mockClient;
 
     protected function setUp(): void
     {
         parent::setUp();
 
-        // Mock the OpenAI client
-        $this->mockClient = Mockery::mock('OpenAI\Client');
-        $this->mockClient->shouldReceive('chat')->andReturn($this->mockClient);
+        // Mock DeepSeek facade
+        $mockChat = Mockery::mock();
+        $mockChat->shouldReceive('create')->andReturn(
+            (object)['content' => $this->getMockAnalysisResponse()]
+        );
 
-        // Create the service with mocked client
+        $mockManager = Mockery::mock();
+        $mockManager->shouldReceive('chat')->andReturn($mockChat);
+
+        $this->app->instance('deepseek', $mockManager);
+
+        // Create the service
         $this->service = new DeepSeekService();
-        $this->setProtectedProperty($this->service, 'client', $this->mockClient);
 
         // Set up test configuration
         Config::set('ai.deepseek.cache.enabled', true);
@@ -41,17 +47,6 @@ class DeepSeekServiceTest extends TestCase
         // Create test data
         $pair = $this->createTestTradingPair();
 
-        // Mock the API response
-        $this->mockClient->shouldReceive('create')
-            ->once()
-            ->andReturn((object)[
-                'choices' => [(object)[
-                    'message' => (object)[
-                        'content' => $this->getMockAnalysisResponse()
-                    ]
-                ]]
-            ]);
-
         // Perform analysis
         $result = $this->service->analyzeMarket($pair);
 
@@ -59,7 +54,15 @@ class DeepSeekServiceTest extends TestCase
         $this->assertArrayHasKey('raw_analysis', $result);
         $this->assertArrayHasKey('parsed', $result);
         $this->assertArrayHasKey('timestamp', $result);
-        $this->assertTrue($result['parsed']);
+        $this->assertTrue($result['success']);
+
+        // Assert parsed data structure
+        $this->assertArrayHasKey('market_regime', $result['parsed']);
+        $this->assertArrayHasKey('risk_level', $result['parsed']);
+        $this->assertArrayHasKey('key_levels', $result['parsed']);
+        $this->assertArrayHasKey('opportunities', $result['parsed']);
+        $this->assertArrayHasKey('risk_factors', $result['parsed']);
+        $this->assertArrayHasKey('position_sizing', $result['parsed']);
     }
 
     /** @test */
@@ -67,17 +70,6 @@ class DeepSeekServiceTest extends TestCase
     {
         $pair = $this->createTestTradingPair();
         $cacheKey = "market_analysis_{$pair->symbol}";
-
-        // First call should hit the API
-        $this->mockClient->shouldReceive('create')
-            ->once()
-            ->andReturn((object)[
-                'choices' => [(object)[
-                    'message' => (object)[
-                        'content' => $this->getMockAnalysisResponse()
-                    ]
-                ]]
-            ]);
 
         // First analysis
         $result1 = $this->service->analyzeMarket($pair);
@@ -95,10 +87,15 @@ class DeepSeekServiceTest extends TestCase
     {
         $pair = $this->createTestTradingPair();
 
-        // Mock an API error
-        $this->mockClient->shouldReceive('create')
-            ->once()
+        // Mock DeepSeek to throw an error
+        $mockChat = Mockery::mock();
+        $mockChat->shouldReceive('create')
             ->andThrow(new \Exception('API Error'));
+
+        $mockManager = Mockery::mock();
+        $mockManager->shouldReceive('chat')->andReturn($mockChat);
+
+        $this->app->instance('deepseek', $mockManager);
 
         $this->expectException(\Exception::class);
         $this->service->analyzeMarket($pair);
@@ -134,7 +131,7 @@ class DeepSeekServiceTest extends TestCase
         $sentiment->news_sentiment = 0.8;
         $sentiment->social_sentiment = 0.6;
         $sentiment->fear_greed_index = 65;
-        $pair->setRelation('sentimentData', collect([$sentiment]));
+        $pair->setRelation('sentimentData', $sentiment);
 
         return $pair;
     }

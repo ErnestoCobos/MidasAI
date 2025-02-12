@@ -2,29 +2,21 @@
 
 namespace App\Services\AI;
 
-use OpenAI\Client;
 use App\Models\TradingPair;
 use App\Models\Order;
 use App\Models\Position;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Config;
+use App\Services\AI\DeepSeek\Facades\DeepSeek;
 
 class DeepSeekService
 {
-    protected Client $client;
-    protected string $model;
     protected array $config;
 
     public function __construct()
     {
         $this->config = Config::get('ai.deepseek');
-        $this->model = $this->config['model'];
-        
-        $this->client = new Client([
-            'api_key' => $this->config['api_key'],
-            'base_url' => $this->config['base_url']
-        ]);
     }
 
     /**
@@ -49,15 +41,12 @@ class DeepSeekService
     public function validateTrade(Order $order)
     {
         try {
-            $response = $this->client->chat->create([
-                'model' => $this->model,
+            $validation = DeepSeek::chat()->create([
                 'messages' => [
                     ['role' => 'system', 'content' => 'You are an expert trade validator.'],
                     ['role' => 'user', 'content' => $this->formatTradeValidationPrompt($order)]
                 ]
-            ]);
-
-            $validation = $response->choices[0]->message->content;
+            ])->content;
 
             if ($this->config['logging']['enabled']) {
                 Log::channel($this->config['logging']['channel'])->info('Trade Validation', [
@@ -82,15 +71,12 @@ class DeepSeekService
     public function assessRisk(Position $position)
     {
         try {
-            $response = $this->client->chat->create([
-                'model' => $this->model,
+            $assessment = DeepSeek::chat()->create([
                 'messages' => [
                     ['role' => 'system', 'content' => 'You are an expert risk analyst.'],
                     ['role' => 'user', 'content' => $this->formatRiskAssessmentPrompt($position)]
                 ]
-            ]);
-
-            $assessment = $response->choices[0]->message->content;
+            ])->content;
 
             if ($this->config['logging']['enabled']) {
                 Log::channel($this->config['logging']['channel'])->info('Risk Assessment', [
@@ -115,15 +101,12 @@ class DeepSeekService
     protected function performMarketAnalysis(TradingPair $pair)
     {
         try {
-            $response = $this->client->chat->create([
-                'model' => $this->model,
+            $analysis = DeepSeek::chat()->create([
                 'messages' => [
                     ['role' => 'system', 'content' => 'You are an expert market analyst.'],
                     ['role' => 'user', 'content' => $this->formatMarketAnalysisPrompt($pair)]
                 ]
-            ]);
-
-            $analysis = $response->choices[0]->message->content;
+            ])->content;
 
             if ($this->config['logging']['enabled']) {
                 Log::channel($this->config['logging']['channel'])->info('Market Analysis', [
@@ -149,7 +132,7 @@ class DeepSeekService
     {
         $technicalData = $pair->technicalIndicator;
         $marketData = $pair->marketData;
-        $sentiment = $pair->sentimentData()->latest()->first();
+        $sentiment = $pair->sentimentData;
 
         return <<<EOT
 Analyze the following market conditions for {$pair->symbol}:
@@ -192,12 +175,128 @@ EOT;
      */
     protected function parseMarketAnalysis($analysis)
     {
-        // TODO: Implement proper parsing logic
+        try {
+            // Split analysis into sections
+            $sections = explode("\n\n", $analysis);
+            $parsed = [];
+            
+            foreach ($sections as $section) {
+                if (preg_match('/1\.\s*Market Regime:(.+?)(?=\d\.|$)/s', $analysis, $matches)) {
+                    $parsed['market_regime'] = $this->parseMarketRegime(trim($matches[1]));
+                }
+                
+                if (preg_match('/2\.\s*Risk Level:\s*(\d+)\/10/s', $analysis, $matches)) {
+                    $parsed['risk_level'] = (int) $matches[1];
+                }
+                
+                if (preg_match('/3\.\s*Key Levels:(.+?)(?=\d\.|$)/s', $analysis, $matches)) {
+                    $parsed['key_levels'] = $this->parseKeyLevels(trim($matches[1]));
+                }
+                
+                if (preg_match('/4\.\s*Trading Opportunities:(.+?)(?=\d\.|$)/s', $analysis, $matches)) {
+                    $parsed['opportunities'] = $this->parseOpportunities(trim($matches[1]));
+                }
+                
+                if (preg_match('/5\.\s*Risk Factors:(.+?)(?=\d\.|$)/s', $analysis, $matches)) {
+                    $parsed['risk_factors'] = $this->parseRiskFactors(trim($matches[1]));
+                }
+                
+                if (preg_match('/6\.\s*Position Sizing:(.+?)(?=\d\.|$)/s', $analysis, $matches)) {
+                    $parsed['position_sizing'] = $this->parsePositionSizing(trim($matches[1]));
+                }
+            }
+
+            return [
+                'raw_analysis' => $analysis,
+                'parsed' => $parsed,
+                'timestamp' => now(),
+                'success' => true
+            ];
+        } catch (\Exception $e) {
+            Log::error('Failed to parse market analysis', [
+                'error' => $e->getMessage(),
+                'analysis' => $analysis
+            ]);
+            
+            return [
+                'raw_analysis' => $analysis,
+                'parsed' => [],
+                'timestamp' => now(),
+                'success' => false,
+                'error' => 'Failed to parse analysis: ' . $e->getMessage()
+            ];
+        }
+    }
+
+    protected function parseMarketRegime($text)
+    {
+        $lines = explode("\n", $text);
+        $regime = trim(explode(':', array_shift($lines))[0]);
+        $details = array_map('trim', $lines);
+        
         return [
-            'raw_analysis' => $analysis,
-            'parsed' => true,
-            'timestamp' => now()
+            'type' => $regime,
+            'details' => $details
         ];
+    }
+
+    protected function parseKeyLevels($text)
+    {
+        $levels = [
+            'support' => [],
+            'resistance' => []
+        ];
+
+        if (preg_match('/Support:(.+?)Resistance:/s', $text, $matches)) {
+            $levels['support'] = $this->parsePriceLevels($matches[1]);
+        }
+
+        if (preg_match('/Resistance:(.+?)$/s', $text, $matches)) {
+            $levels['resistance'] = $this->parsePriceLevels($matches[1]);
+        }
+
+        return $levels;
+    }
+
+    protected function parsePriceLevels($text)
+    {
+        $levels = [];
+        $lines = explode("\n", $text);
+        
+        foreach ($lines as $line) {
+            if (preg_match('/[-]\s*(Major|Minor):\s*\$?([\d,]+)/', $line, $matches)) {
+                $levels[] = [
+                    'type' => strtolower($matches[1]),
+                    'price' => (float) str_replace(',', '', $matches[2])
+                ];
+            }
+        }
+
+        return $levels;
+    }
+
+    protected function parseOpportunities($text)
+    {
+        return array_map('trim', explode("\n-", $text));
+    }
+
+    protected function parseRiskFactors($text)
+    {
+        return array_map('trim', explode("\n-", $text));
+    }
+
+    protected function parsePositionSizing($text)
+    {
+        $sizing = [];
+        $lines = explode("\n", $text);
+        
+        foreach ($lines as $line) {
+            if (preg_match('/-\s*(.+?):\s*(.+)/', $line, $matches)) {
+                $sizing[strtolower(str_replace(' ', '_', trim($matches[1])))] = trim($matches[2]);
+            }
+        }
+
+        return $sizing;
     }
 
     /**
