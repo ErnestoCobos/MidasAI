@@ -204,6 +204,11 @@ return [
                 'timeout' => 60,
                 'memory' => 512,
                 'nice' => 0,
+                'maxJobs' => 0,
+                'maxTime' => 0,
+                'restartAfterJobs' => 1000,
+                'stopWhenEmpty' => false,
+                'backoff' => [0, 10, 30],
             ],
             'websocket-supervisor' => [
                 'connection' => 'redis',
@@ -214,6 +219,10 @@ return [
                 'timeout' => 0, // No timeout for WebSocket
                 'memory' => 512,
                 'nice' => 0,
+                'maxJobs' => 0,
+                'maxTime' => 0,
+                'stopWhenEmpty' => false,
+                'backoff' => [0, 10, 30],
             ],
         ],
 
