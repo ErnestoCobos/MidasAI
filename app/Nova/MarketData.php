@@ -76,14 +76,16 @@ class MarketData extends Resource
                         'bullish' => 'success',
                         'bearish' => 'danger',
                         'doji' => 'warning',
+                        'unknown' => 'info'
                     ])
                     ->resolveUsing(function ($resource) {
+                        if (!$resource) return 'unknown';
                         if ($resource->isDoji()) return 'doji';
                         return $resource->isBullish() ? 'bullish' : 'bearish';
                     }),
 
                 Number::make('Range')
-                    ->resolveUsing(fn ($resource) => $resource->getRange())
+                    ->resolveUsing(fn ($resource) => $resource ? $resource->getRange() : null)
                     ->step(0.00000001)
                     ->sortable(),
             ]),
@@ -109,7 +111,7 @@ class MarketData extends Resource
                     ->sortable(),
 
                 Number::make('Buy/Sell Ratio')
-                    ->resolveUsing(fn ($resource) => $resource->getBuySellRatio())
+                    ->resolveUsing(fn ($resource) => $resource ? $resource->getBuySellRatio() : null)
                     ->displayUsing(fn ($value) => number_format($value, 2) . 'x')
                     ->sortable(),
 
@@ -118,8 +120,10 @@ class MarketData extends Resource
                         'high_buy' => 'success',
                         'high_sell' => 'danger',
                         'neutral' => 'info',
+                        'unknown' => 'warning'
                     ])
                     ->resolveUsing(function ($resource) {
+                        if (!$resource) return 'unknown';
                         $ratio = $resource->getBuySellRatio();
                         if ($ratio > 1.5) return 'high_buy';
                         if ($ratio < 0.5) return 'high_sell';
@@ -129,17 +133,17 @@ class MarketData extends Resource
 
             new Panel('Price Action Analysis', [
                 Number::make('Body Size')
-                    ->resolveUsing(fn ($resource) => $resource->getBodySize())
+                    ->resolveUsing(fn ($resource) => $resource ? $resource->getBodySize() : null)
                     ->step(0.00000001)
                     ->sortable(),
 
                 Number::make('Upper Shadow')
-                    ->resolveUsing(fn ($resource) => $resource->getUpperShadow())
+                    ->resolveUsing(fn ($resource) => $resource ? $resource->getUpperShadow() : null)
                     ->step(0.00000001)
                     ->sortable(),
 
                 Number::make('Lower Shadow')
-                    ->resolveUsing(fn ($resource) => $resource->getLowerShadow())
+                    ->resolveUsing(fn ($resource) => $resource ? $resource->getLowerShadow() : null)
                     ->step(0.00000001)
                     ->sortable(),
 
@@ -149,13 +153,16 @@ class MarketData extends Resource
                         'hammer' => 'success',
                         'shooting_star' => 'danger',
                         'marubozu' => 'info',
+                        'none' => 'default',
+                        'unknown' => 'warning'
                     ])
                     ->resolveUsing(function ($resource) {
+                        if (!$resource) return 'unknown';
                         if ($resource->isDoji()) return 'doji';
                         if ($resource->getLowerShadow() > ($resource->getRange() * 0.6)) return 'hammer';
                         if ($resource->getUpperShadow() > ($resource->getRange() * 0.6)) return 'shooting_star';
                         if ($resource->getBodySize() > ($resource->getRange() * 0.8)) return 'marubozu';
-                        return null;
+                        return 'none';
                     }),
             ]),
         ];

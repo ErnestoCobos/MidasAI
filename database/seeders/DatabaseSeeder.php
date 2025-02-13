@@ -27,9 +27,10 @@ class DatabaseSeeder extends Seeder
             'role' => User::ROLE_ADMIN,
         ]);
 
-        // Seed trading pairs
+        // Seed trading pairs and market data
         $this->call([
             TradingPairSeeder::class,
+            MarketDataSeeder::class,
         ]);
     }
 }

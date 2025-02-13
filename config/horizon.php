@@ -78,13 +78,14 @@ return [
     |--------------------------------------------------------------------------
     |
     | This option allows you to configure when the LongWaitDetected event
-    | will be fired. Every connection / queue combination may have its
-    | own, unique threshold (in seconds) before this event is fired.
+    | will be fired. The queue wait time is calculated by averaging the
+    | time it takes for a job to be processed for the past few jobs.
     |
     */
 
     'waits' => [
         'redis:default' => 60,
+        'redis:market-data' => 30,
     ],
 
     /*
@@ -114,12 +115,12 @@ return [
     |
     | Silencing a job will instruct Horizon to not place the job in the list
     | of completed jobs within the Horizon dashboard. This setting may be
-    | used to fully remove any noisy jobs from the completed jobs list.
+    | used to keep the dashboard clean of unimportant jobs.
     |
     */
 
     'silenced' => [
-        // App\Jobs\ExampleJob::class,
+        App\Jobs\Market\ProcessTradeData::class,
     ],
 
     /*
@@ -146,10 +147,8 @@ return [
     |--------------------------------------------------------------------------
     |
     | When this option is enabled, Horizon's "terminate" command will not
-    | wait on all of the workers to terminate unless the --wait option
-    | is provided. Fast termination can shorten deployment delay by
-    | allowing a new instance of Horizon to start while the last
-    | instance will continue to terminate each of its workers.
+    | wait on all of the workers to terminate unless the --wait flag
+    | is provided. Fast termination can shorten deployment delay.
     |
     */
 
@@ -184,7 +183,6 @@ return [
             'connection' => 'redis',
             'queue' => ['default'],
             'balance' => 'auto',
-            'autoScalingStrategy' => 'time',
             'maxProcesses' => 1,
             'maxTime' => 0,
             'maxJobs' => 0,
@@ -197,16 +195,42 @@ return [
 
     'environments' => [
         'production' => [
-            'supervisor-1' => [
-                'maxProcesses' => 10,
-                'balanceMaxShift' => 1,
-                'balanceCooldown' => 3,
+            'market-data-supervisor' => [
+                'connection' => 'redis',
+                'queue' => ['market-data'],
+                'balance' => 'simple',
+                'processes' => 3,
+                'tries' => 3,
+                'timeout' => 60,
+                'memory' => 512,
+                'nice' => 0,
+            ],
+            'websocket-supervisor' => [
+                'connection' => 'redis',
+                'queue' => ['websocket'],
+                'balance' => 'simple',
+                'processes' => 1,
+                'tries' => 3,
+                'timeout' => 0, // No timeout for WebSocket
+                'memory' => 512,
+                'nice' => 0,
             ],
         ],
 
         'local' => [
-            'supervisor-1' => [
-                'maxProcesses' => 3,
+            'market-data-supervisor' => [
+                'connection' => 'redis',
+                'queue' => ['market-data'],
+                'balance' => 'simple',
+                'processes' => 2,
+                'tries' => 3,
+            ],
+            'websocket-supervisor' => [
+                'connection' => 'redis',
+                'queue' => ['websocket'],
+                'balance' => 'simple',
+                'processes' => 1,
+                'tries' => 3,
             ],
         ],
     ],

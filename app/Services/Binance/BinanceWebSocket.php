@@ -133,28 +133,18 @@ class BinanceWebSocket
                 throw new Exception('Invalid message format');
             }
 
-            // Handle different stream types
-            if (isset($data['e'])) {
-                switch ($data['e']) {
-                    case 'kline':
-                        $this->handleKlineMessage($data);
-                        break;
-                    case 'trade':
-                        $this->handleTradeMessage($data);
-                        break;
-                    case 'ticker':
-                        $this->handleTickerMessage($data);
-                        break;
-                    case 'depth':
-                        $this->handleDepthMessage($data);
-                        break;
-                }
-            }
+            // Dispatch job to process the message
+            ProcessWebSocketData::dispatch($data)
+                ->onQueue('market-data')
+                ->delay(now()->addSeconds(1)); // Small delay to prevent overwhelming the queue
 
-            // Execute callbacks
+            // Execute callbacks if any
             foreach ($this->callbacks as $callback) {
                 $callback($data);
             }
+
+            // Update connection status in cache
+            Cache::put('binance_websocket_last_message', now(), now()->addMinutes(5));
         } catch (Exception $e) {
             SystemLog::create([
                 'level' => 'ERROR',
@@ -169,79 +159,6 @@ class BinanceWebSocket
         }
     }
 
-    /**
-     * Handle kline/candlestick messages
-     */
-    protected function handleKlineMessage(array $data)
-    {
-        $symbol = $data['s'];
-        $kline = $data['k'];
-
-        // Update market data
-        MarketData::create([
-            'trading_pair_id' => $this->getTradingPairId($symbol),
-            'timestamp' => $kline['t'],
-            'open' => $kline['o'],
-            'high' => $kline['h'],
-            'low' => $kline['l'],
-            'close' => $kline['c'],
-            'volume' => $kline['v'],
-            'quote_volume' => $kline['q'],
-            'number_of_trades' => $kline['n'],
-            'taker_buy_volume' => $kline['V'],
-            'taker_buy_quote_volume' => $kline['Q']
-        ]);
-
-        // Update cache
-        $cacheKey = "binance_price_{$symbol}";
-        Cache::put($cacheKey, $kline['c'], 60);
-    }
-
-    /**
-     * Handle trade messages
-     */
-    protected function handleTradeMessage(array $data)
-    {
-        // Process individual trade data
-        // This could be used for real-time trade analysis
-        // or to trigger events based on trade conditions
-    }
-
-    /**
-     * Handle ticker messages
-     */
-    protected function handleTickerMessage(array $data)
-    {
-        $symbol = $data['s'];
-        $cacheKey = "binance_24hr_{$symbol}";
-        
-        Cache::put($cacheKey, [
-            'price_change' => $data['p'],
-            'price_change_percent' => $data['P'],
-            'weighted_avg_price' => $data['w'],
-            'last_price' => $data['c'],
-            'last_qty' => $data['Q'],
-            'best_bid' => $data['b'],
-            'best_bid_qty' => $data['B'],
-            'best_ask' => $data['a'],
-            'best_ask_qty' => $data['A'],
-        ], 60);
-    }
-
-    /**
-     * Handle depth (order book) messages
-     */
-    protected function handleDepthMessage(array $data)
-    {
-        $symbol = $data['s'];
-        $cacheKey = "binance_depth_{$symbol}";
-        
-        Cache::put($cacheKey, [
-            'bids' => $data['b'],
-            'asks' => $data['a'],
-            'update_id' => $data['u'],
-        ], 60);
-    }
 
     /**
      * Handle WebSocket errors

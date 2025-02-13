@@ -18,6 +18,8 @@ class MarketData extends Model
         'number_of_trades',
         'taker_buy_volume',
         'taker_buy_quote_volume',
+        'daily_volatility',
+        'buy_sell_ratio',
     ];
 
     protected $casts = [
@@ -31,6 +33,8 @@ class MarketData extends Model
         'number_of_trades' => 'integer',
         'taker_buy_volume' => 'decimal:8',
         'taker_buy_quote_volume' => 'decimal:8',
+        'daily_volatility' => 'decimal:8',
+        'buy_sell_ratio' => 'decimal:8',
     ];
 
     // Relationships
