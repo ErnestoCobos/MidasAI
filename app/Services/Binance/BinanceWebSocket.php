@@ -6,31 +6,26 @@ use App\Models\MarketData;
 use App\Models\SystemLog;
 use App\Models\TradingPair;
 use Illuminate\Support\Facades\Cache;
-use Ratchet\Client\WebSocket;
-use React\EventLoop\Loop;
-use Exception;
+use Illuminate\Support\Facades\Http;
 
 class BinanceWebSocket
 {
-    protected string $wsBaseUrl;
+    protected string $baseUrl;
     protected bool $testnet;
     protected array $activeStreams = [];
-    protected ?WebSocket $conn = null;
     protected array $callbacks = [];
-    protected bool $reconnecting = false;
-    protected int $reconnectAttempts = 0;
-    protected const MAX_RECONNECT_ATTEMPTS = 5;
+    protected bool $running = true;
 
     public function __construct()
     {
         $this->testnet = config('services.binance.testnet', true);
-        $this->wsBaseUrl = $this->testnet
-            ? 'wss://testnet.binance.vision/ws'
-            : 'wss://stream.binance.com:9443/ws';
+        $this->baseUrl = $this->testnet
+            ? 'https://testnet.binance.vision/api/v3'
+            : 'https://api.binance.com/api/v3';
     }
 
     /**
-     * Connect to WebSocket and subscribe to streams
+     * Connect and start streaming data
      */
     public function connect(array $streams, callable $callback = null)
     {
@@ -40,212 +35,150 @@ class BinanceWebSocket
             $this->callbacks[] = $callback;
         }
 
-        \Ratchet\Client\connect($this->wsBaseUrl)->then(
-            function (WebSocket $conn) {
-                $this->conn = $conn;
-                $this->reconnecting = false;
-                $this->reconnectAttempts = 0;
+        while ($this->running) {
+            try {
+                $pairs = TradingPair::where('is_active', true)->get();
+                
+                foreach ($pairs as $pair) {
+                    $symbol = str_replace('/', '', $pair->symbol);
+                    
+                    // Get 24hr ticker data
+                    $response = Http::get($this->baseUrl . '/ticker/24hr', [
+                        'symbol' => $symbol
+                    ]);
 
+                    if ($response->successful()) {
+                        $data = $response->json();
+                        
+                        // Get klines data
+                        $klines = Http::get($this->baseUrl . '/klines', [
+                            'symbol' => $symbol,
+                            'interval' => '1m',
+                            'limit' => 1
+                        ])->json();
+
+                        if (!empty($klines)) {
+                            $kline = $klines[0];
+                            $this->processData($data, $kline, $pair);
+                        }
+                    }
+                }
+
+                // Sleep for 1 second to avoid rate limits
+                sleep(1);
+
+            } catch (\Exception $e) {
                 SystemLog::create([
-                    'level' => 'INFO',
+                    'level' => 'ERROR',
                     'component' => 'BinanceWebSocket',
-                    'event' => 'WEBSOCKET_CONNECTED',
-                    'message' => 'Successfully connected to Binance WebSocket'
+                    'event' => 'CONNECTION_ERROR',
+                    'message' => $e->getMessage()
                 ]);
 
-                // Subscribe to streams
-                $this->subscribe($this->activeStreams);
-
-                // Message handler
-                $conn->on('message', function ($msg) {
-                    $this->handleMessage($msg);
-                });
-
-                // Error handler
-                $conn->on('error', function ($error) {
-                    $this->handleError($error);
-                });
-
-                // Close handler
-                $conn->on('close', function ($code = null, $reason = null) {
-                    $this->handleClose($code, $reason);
-                });
-            },
-            function (Exception $e) {
-                $this->handleConnectionError($e);
+                // Sleep for 5 seconds before retrying
+                sleep(5);
             }
-        );
-    }
-
-    /**
-     * Subscribe to streams
-     */
-    protected function subscribe(array $streams)
-    {
-        if (!$this->conn) {
-            throw new Exception('WebSocket not connected');
         }
-
-        $params = [
-            'method' => 'SUBSCRIBE',
-            'params' => $streams,
-            'id' => time()
-        ];
-
-        $this->conn->send(json_encode($params));
-
-        SystemLog::create([
-            'level' => 'INFO',
-            'component' => 'BinanceWebSocket',
-            'event' => 'STREAM_SUBSCRIBED',
-            'message' => 'Subscribed to streams: ' . implode(', ', $streams),
-            'context' => ['streams' => $streams]
-        ]);
     }
 
     /**
-     * Unsubscribe from streams
+     * Process market data
      */
-    protected function unsubscribe(array $streams)
-    {
-        if (!$this->conn) {
-            throw new Exception('WebSocket not connected');
-        }
-
-        $params = [
-            'method' => 'UNSUBSCRIBE',
-            'params' => $streams,
-            'id' => time()
-        ];
-
-        $this->conn->send(json_encode($params));
-    }
-
-    /**
-     * Handle incoming messages
-     */
-    protected function handleMessage($msg)
+    protected function processData($ticker, $kline, TradingPair $pair)
     {
         try {
-            $data = json_decode($msg, true);
-            
-            if (!$data) {
-                throw new Exception('Invalid message format');
-            }
+            // Create market data record
+            MarketData::create([
+                'trading_pair_id' => $pair->id,
+                'timestamp' => now(),
+                'open' => $kline[1],  // Open price
+                'high' => $kline[2],  // High price
+                'low' => $kline[3],   // Low price
+                'close' => $kline[4], // Close price
+                'volume' => $kline[5], // Volume
+                'quote_volume' => $kline[7], // Quote volume
+                'number_of_trades' => $kline[8], // Number of trades
+                'taker_buy_volume' => $kline[9], // Taker buy volume
+                'taker_buy_quote_volume' => $kline[10], // Taker buy quote volume
+                'daily_volatility' => $this->calculateVolatility($ticker),
+                'buy_sell_ratio' => $this->calculateBuySellRatio($ticker),
+            ]);
 
-            // Dispatch job to process the message
-            ProcessWebSocketData::dispatch($data)
-                ->onQueue('market-data')
-                ->delay(now()->addSeconds(1)); // Small delay to prevent overwhelming the queue
+            // Update cache
+            $this->updateCache($pair->symbol, $ticker, $kline);
 
-            // Execute callbacks if any
+            // Execute callbacks
             foreach ($this->callbacks as $callback) {
-                $callback($data);
+                $callback([
+                    'ticker' => $ticker,
+                    'kline' => $kline
+                ]);
             }
 
-            // Update connection status in cache
-            Cache::put('binance_websocket_last_message', now(), now()->addMinutes(5));
-        } catch (Exception $e) {
+        } catch (\Exception $e) {
             SystemLog::create([
                 'level' => 'ERROR',
                 'component' => 'BinanceWebSocket',
-                'event' => 'MESSAGE_PROCESSING_ERROR',
+                'event' => 'DATA_PROCESSING_ERROR',
                 'message' => $e->getMessage(),
                 'context' => [
-                    'raw_message' => $msg,
+                    'ticker' => $ticker,
+                    'kline' => $kline,
                     'error' => $e->getMessage()
                 ]
             ]);
         }
     }
 
-
     /**
-     * Handle WebSocket errors
+     * Calculate volatility
      */
-    protected function handleError(Exception $error)
+    protected function calculateVolatility($data)
     {
-        SystemLog::create([
-            'level' => 'ERROR',
-            'component' => 'BinanceWebSocket',
-            'event' => 'WEBSOCKET_ERROR',
-            'message' => $error->getMessage()
-        ]);
+        $high = floatval($data['highPrice']);
+        $low = floatval($data['lowPrice']);
+        $open = floatval($data['openPrice']);
 
-        $this->attemptReconnect();
+        return (($high - $low) / $open) * 100;
     }
 
     /**
-     * Handle WebSocket close
+     * Calculate buy/sell ratio
      */
-    protected function handleClose($code = null, $reason = null)
+    protected function calculateBuySellRatio($data)
     {
-        SystemLog::create([
-            'level' => 'WARNING',
-            'component' => 'BinanceWebSocket',
-            'event' => 'WEBSOCKET_CLOSED',
-            'message' => "WebSocket closed: {$code} - {$reason}",
-            'context' => [
-                'code' => $code,
-                'reason' => $reason
-            ]
-        ]);
+        $buyVolume = floatval($data['takerBuyVolume'] ?? 0);
+        $totalVolume = floatval($data['volume']);
+        $sellVolume = $totalVolume - $buyVolume;
 
-        $this->attemptReconnect();
+        return $sellVolume > 0 ? $buyVolume / $sellVolume : 0;
     }
 
     /**
-     * Handle connection errors
+     * Update cache with latest data
      */
-    protected function handleConnectionError(Exception $error)
+    protected function updateCache(string $symbol, array $ticker, array $kline): void
     {
-        SystemLog::create([
-            'level' => 'ERROR',
-            'component' => 'BinanceWebSocket',
-            'event' => 'CONNECTION_ERROR',
-            'message' => $error->getMessage()
-        ]);
+        $cacheKey = "binance_price_{$symbol}";
+        Cache::put($cacheKey, $ticker['lastPrice'], now()->addMinutes(5));
 
-        $this->attemptReconnect();
+        $candleKey = "binance_candle_{$symbol}";
+        Cache::put($candleKey, [
+            'open' => $kline[1],
+            'high' => $kline[2],
+            'low' => $kline[3],
+            'close' => $kline[4],
+            'volume' => $kline[5],
+            'timestamp' => $kline[0]
+        ], now()->addMinutes(5));
     }
 
     /**
-     * Attempt to reconnect
-     */
-    protected function attemptReconnect()
-    {
-        if ($this->reconnecting || $this->reconnectAttempts >= self::MAX_RECONNECT_ATTEMPTS) {
-            return;
-        }
-
-        $this->reconnecting = true;
-        $this->reconnectAttempts++;
-
-        $delay = min(1000 * pow(2, $this->reconnectAttempts), 30000);
-
-        Loop::addTimer($delay / 1000, function () {
-            $this->connect($this->activeStreams);
-        });
-    }
-
-    /**
-     * Get trading pair ID from symbol
-     */
-    protected function getTradingPairId(string $symbol): int
-    {
-        $formattedSymbol = substr($symbol, 0, -4) . '/' . substr($symbol, -4);
-        return TradingPair::where('symbol', $formattedSymbol)->value('id');
-    }
-
-    /**
-     * Close WebSocket connection
+     * Close connection
      */
     public function close()
     {
-        if ($this->conn) {
-            $this->conn->close();
-            $this->conn = null;
-        }
+        $this->running = false;
     }
 
     /**
@@ -254,57 +187,5 @@ class BinanceWebSocket
     public function addCallback(callable $callback)
     {
         $this->callbacks[] = $callback;
-    }
-
-    /**
-     * Subscribe to kline/candlestick stream
-     */
-    public function subscribeKline(string $symbol, string $interval = '1m')
-    {
-        $stream = strtolower($symbol) . "@kline_{$interval}";
-        $this->activeStreams[] = $stream;
-        
-        if ($this->conn) {
-            $this->subscribe([$stream]);
-        }
-    }
-
-    /**
-     * Subscribe to trade stream
-     */
-    public function subscribeTrades(string $symbol)
-    {
-        $stream = strtolower($symbol) . '@trade';
-        $this->activeStreams[] = $stream;
-        
-        if ($this->conn) {
-            $this->subscribe([$stream]);
-        }
-    }
-
-    /**
-     * Subscribe to ticker stream
-     */
-    public function subscribeTicker(string $symbol)
-    {
-        $stream = strtolower($symbol) . '@ticker';
-        $this->activeStreams[] = $stream;
-        
-        if ($this->conn) {
-            $this->subscribe([$stream]);
-        }
-    }
-
-    /**
-     * Subscribe to depth stream
-     */
-    public function subscribeDepth(string $symbol, string $level = '100ms')
-    {
-        $stream = strtolower($symbol) . "@depth@{$level}";
-        $this->activeStreams[] = $stream;
-        
-        if ($this->conn) {
-            $this->subscribe([$stream]);
-        }
     }
 }

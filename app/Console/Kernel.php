@@ -12,11 +12,7 @@ class Kernel extends ConsoleKernel
      *
      * @var array
      */
-    protected $commands = [
-        Commands\WebSocketBinance::class,
-        Commands\MonitorWebSocket::class,
-        Commands\CleanupMarketData::class,
-    ];
+    protected $commands = [];
 
     /**
      * Define the application's command schedule.
@@ -32,7 +28,7 @@ class Kernel extends ConsoleKernel
             ->withoutOverlapping();
 
         // WebSocket Management
-        $schedule->command('websocket:monitor')
+        $schedule->command('binance:websocket')
             ->everyFiveMinutes()
             ->withoutOverlapping();
 

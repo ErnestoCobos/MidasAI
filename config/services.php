@@ -35,4 +35,10 @@ return [
         ],
     ],
 
+    'binance' => [
+        'key' => env('BINANCE_API_KEY'),
+        'secret' => env('BINANCE_API_SECRET'),
+        'testnet' => env('BINANCE_TESTNET', true),
+    ],
+
 ];
