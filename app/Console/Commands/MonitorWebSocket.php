@@ -90,7 +90,7 @@ class MonitorWebSocket extends Command
         }
 
         // Start new websocket process
-        $command = 'php artisan websocket:binance';
+        $command = 'php artisan binance:websocket';
         if (config('services.binance.testnet')) {
             $command .= ' --testnet';
         }

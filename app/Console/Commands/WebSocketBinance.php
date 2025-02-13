@@ -15,7 +15,7 @@ class WebSocketBinance extends Command
      *
      * @var string
      */
-    protected $signature = 'websocket:binance
+    protected $signature = 'binance:websocket
                           {--testnet : Use Binance testnet}';
 
     /**
