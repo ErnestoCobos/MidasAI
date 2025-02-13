@@ -29,9 +29,9 @@ return new class extends Migration
             $table->json('context')->nullable(); // Additional contextual data
             
             // Related Entities
-            $table->foreignId('trading_pair_id')->nullable()->constrained()->onDelete('set null');
-            $table->foreignId('order_id')->nullable()->constrained()->onDelete('set null');
-            $table->foreignId('position_id')->nullable()->constrained()->onDelete('set null');
+            $table->unsignedBigInteger('trading_pair_id')->nullable();
+            $table->unsignedBigInteger('order_id')->nullable();
+            $table->unsignedBigInteger('position_id')->nullable();
             
             // System Information
             $table->string('ip_address', 45)->nullable();

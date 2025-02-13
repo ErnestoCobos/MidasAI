@@ -258,114 +258,249 @@ async function executeTrade() {
 
 ### Backend (Laravel)
 
-#### 1. Authentication Controllers
+#### 1. Nova Resources
+
 ```php
-class AuthController extends Controller
+// app/Nova/User.php
+class User extends Resource
 {
-    public function login(LoginRequest $request)
+    public static $model = \App\Models\User::class;
+
+    public function fields(Request $request)
     {
-        // Validate credentials
-        if (!Auth::attempt($request->validated())) {
-            return response()->json([
-                'message' => 'Invalid credentials'
-            ], 401);
+        return [
+            ID::make()->sortable(),
+            Text::make('Name')->sortable(),
+            Text::make('Email')->sortable(),
+            Password::make('Password')->onlyOnForms(),
+            Select::make('Role')->options([
+                User::ROLE_ADMIN => 'Administrator',
+                User::ROLE_TRADER => 'Trader',
+                User::ROLE_VIEWER => 'Viewer'
+            ])->displayUsingLabels(),
+            Boolean::make('Is Active'),
+            HasMany::make('Orders'),
+            HasMany::make('Positions'),
+            HasMany::make('TradingStrategies'),
+        ];
+    }
+
+    public function cards(Request $request)
+    {
+        return [
+            new Metrics\UserPortfolioValue,
+            new Metrics\UserTradingVolume,
+            new Metrics\UserProfitLoss,
+            new Metrics\UserTradingAccuracy,
+        ];
+    }
+
+    public function authorizedToView(Request $request)
+    {
+        return $request->user()->can('view_analytics');
+    }
+
+    public function authorizedToCreate(Request $request)
+    {
+        return $request->user()->role === User::ROLE_ADMIN;
+    }
+
+    public function authorizedToUpdate(Request $request)
+    {
+        return $request->user()->role === User::ROLE_ADMIN;
+    }
+
+    public function authorizedToDelete(Request $request)
+    {
+        return $request->user()->role === User::ROLE_ADMIN;
+    }
+}
+
+// app/Nova/Order.php
+class Order extends Resource
+{
+    public static $model = \App\Models\Order::class;
+
+    public function fields(Request $request)
+    {
+        return [
+            ID::make()->sortable(),
+            BelongsTo::make('User'),
+            BelongsTo::make('TradingPair'),
+            Select::make('Type')->options([
+                'market' => 'Market',
+                'limit' => 'Limit',
+                'stop_loss' => 'Stop Loss',
+                'take_profit' => 'Take Profit'
+            ])->displayUsingLabels(),
+            Select::make('Side')->options([
+                'buy' => 'Buy',
+                'sell' => 'Sell'
+            ])->displayUsingLabels(),
+            Number::make('Quantity'),
+            Number::make('Price'),
+            Number::make('Total')->exceptOnForms(),
+            Status::make('Status')
+                ->loadingWhen(['pending'])
+                ->failedWhen(['failed'])
+                ->successWhen(['completed']),
+            DateTime::make('Created At')->sortable(),
+        ];
+    }
+
+    public function actions(Request $request)
+    {
+        return [
+            new Actions\CancelOrder,
+            new Actions\ModifyOrder,
+        ];
+    }
+}
+
+// app/Nova/TradingStrategy.php
+class TradingStrategy extends Resource
+{
+    public static $model = \App\Models\TradingStrategy::class;
+
+    public function fields(Request $request)
+    {
+        return [
+            ID::make()->sortable(),
+            Text::make('Name')->sortable(),
+            Textarea::make('Description'),
+            Code::make('Parameters')->json(),
+            Boolean::make('Is Active'),
+            BelongsTo::make('User'),
+            HasMany::make('Orders'),
+            DateTime::make('Created At')->sortable(),
+            DateTime::make('Updated At')->sortable(),
+        ];
+    }
+
+    public function actions(Request $request)
+    {
+        return [
+            new Actions\ExecuteStrategy,
+            new Actions\BacktestStrategy,
+            new Actions\OptimizeStrategy,
+        ];
+    }
+
+    public function cards(Request $request)
+    {
+        return [
+            new Metrics\StrategyPerformance,
+            new Metrics\StrategyAccuracy,
+            new Metrics\StrategyRiskMetrics,
+        ];
+    }
+}
+```
+
+#### 2. Nova Actions
+
+```php
+// app/Nova/Actions/ExecuteStrategy.php
+class ExecuteStrategy extends Action
+{
+    public function handle(ActionFields $fields, Collection $models)
+    {
+        foreach ($models as $strategy) {
+            if ($fields->backtest_only) {
+                dispatch(new BacktestStrategyJob($strategy));
+            } else {
+                dispatch(new ExecuteStrategyJob($strategy, [
+                    'risk_level' => $fields->risk_level
+                ]));
+            }
         }
 
-        // Generate token
-        $token = $request->user()->createToken('trading-app');
-
-        return response()->json([
-            'token' => $token->plainTextToken,
-            'user' => $request->user()
-        ]);
+        return Action::message('Strategy execution initiated');
     }
 
-    public function register(RegisterRequest $request)
+    public function fields(Request $request)
     {
-        $user = User::create([
-            'name' => $request->name,
-            'email' => $request->email,
-            'password' => Hash::make($request->password),
-        ]);
+        return [
+            Boolean::make('Backtest Only'),
+            Number::make('Risk Level')
+                ->min(1)
+                ->max(10)
+                ->help('Set the risk level for strategy execution'),
+        ];
+    }
+}
 
-        // Assign default role
-        $user->assignRole('trader');
+// app/Nova/Actions/ModifyOrder.php
+class ModifyOrder extends Action
+{
+    public function handle(ActionFields $fields, Collection $models)
+    {
+        foreach ($models as $order) {
+            $order->update([
+                'quantity' => $fields->quantity,
+                'price' => $fields->price,
+            ]);
+        }
 
-        return response()->json([
-            'message' => 'User registered successfully'
-        ]);
+        return Action::message('Orders updated successfully');
+    }
+
+    public function fields(Request $request)
+    {
+        return [
+            Number::make('Quantity')
+                ->rules('required', 'min:0'),
+            Number::make('Price')
+                ->rules('required', 'min:0'),
+        ];
     }
 }
 ```
 
-#### 2. Trading Controllers
+#### 3. Nova Metrics
+
 ```php
-class TradingController extends Controller
+// app/Nova/Metrics/PortfolioValue.php
+class PortfolioValue extends Value
 {
-    public function placeOrder(OrderRequest $request)
+    public function calculate(Request $request)
     {
-        // Validate user can trade
-        $this->authorize('trade');
-
-        // Create order
-        $order = Order::create([
-            'user_id' => auth()->id(),
-            'trading_pair_id' => $request->trading_pair_id,
-            'type' => $request->type,
-            'side' => $request->side,
-            'quantity' => $request->quantity,
-            'price' => $request->price,
-        ]);
-
-        // Execute order
-        $this->orderService->execute($order);
-
-        return response()->json($order);
+        return $this->result(
+            PortfolioSnapshot::latest()->first()->total_value
+        )->currency('USD');
     }
 
-    public function getPositions()
+    public function ranges()
     {
-        return response()->json(
-            Position::with('tradingPair')
-                ->where('user_id', auth()->id())
-                ->where('status', 'open')
-                ->get()
-        );
+        return [
+            'TODAY' => 'Today',
+            30 => '30 Days',
+            60 => '60 Days',
+            365 => '365 Days',
+        ];
     }
 }
-```
 
-#### 3. Strategy Controllers
-```php
-class StrategyController extends Controller
+// app/Nova/Metrics/TradingVolume.php
+class TradingVolume extends Trend
 {
-    public function index()
+    public function calculate(Request $request)
     {
-        return response()->json(
-            TradingStrategy::where('user_id', auth()->id())->get()
-        );
+        return $this->sumByDays($request, Order::class, 'total')
+            ->showLatestValue()
+            ->suffix('USD');
     }
+}
 
-    public function store(StrategyRequest $request)
+// app/Nova/Metrics/AIAccuracy.php
+class AIAccuracy extends Partition
+{
+    public function calculate(Request $request)
     {
-        $strategy = TradingStrategy::create([
-            'user_id' => auth()->id(),
-            'name' => $request->name,
-            'description' => $request->description,
-            'parameters' => $request->parameters,
-            'is_active' => false,
-        ]);
-
-        return response()->json($strategy);
-    }
-
-    public function update(StrategyRequest $request, TradingStrategy $strategy)
-    {
-        $this->authorize('update', $strategy);
-
-        $strategy->update($request->validated());
-
-        return response()->json($strategy);
+        return $this->count($request, AIDecision::class, 'accuracy_level')
+            ->label(function($value) {
+                return ["High", "Medium", "Low"][$value] ?? $value;
+            });
     }
 }
 ```
@@ -449,42 +584,177 @@ export function useWebSocket(symbol: string) {
 
 ### Security Implementation
 
-#### 1. Authentication Middleware
-```php
-class Authenticate extends Middleware
-{
-    protected function authenticate($request, array $guards)
-    {
-        if ($this->auth->guard('sanctum')->check()) {
-            return $this->auth->shouldUse('sanctum');
-        }
+#### 1. Nova Authorization
 
-        $this->unauthenticated($request, ['sanctum']);
+```php
+// app/Providers/NovaServiceProvider.php
+class NovaServiceProvider extends NovaApplicationServiceProvider
+{
+    protected function gate()
+    {
+        Gate::define('viewNova', function ($user) {
+            return $user->can('view_analytics');
+        });
+    }
+
+    protected function resources()
+    {
+        Nova::resources([
+            User::class,
+            TradingPair::class,
+            Order::class,
+            Position::class,
+            TradingStrategy::class,
+            SystemLog::class,
+            TechnicalIndicator::class,
+            MarketData::class,
+            SentimentData::class,
+            PortfolioSnapshot::class,
+        ]);
+    }
+
+    protected function cards()
+    {
+        return [
+            new Metrics\PortfolioValue,
+            new Metrics\TradingVolume,
+            new Metrics\AIAccuracy,
+            new Metrics\SystemHealth,
+            new Metrics\ProfitLoss,
+            new Metrics\ActivePositions,
+            new Metrics\SignalOccurrences,
+            new Metrics\LogLevelDistribution,
+        ];
+    }
+
+    protected function tools()
+    {
+        return [
+            new TradingDashboard,
+            new AIMonitor,
+            new RiskManager,
+            new SystemMonitor,
+            new StrategyManager,
+            new LogViewer,
+        ];
+    }
+}
+
+// app/Policies/TradingStrategyPolicy.php
+class TradingStrategyPolicy
+{
+    public function viewAny(User $user)
+    {
+        return $user->can('view_analytics');
+    }
+
+    public function view(User $user, TradingStrategy $strategy)
+    {
+        return $user->can('view_analytics') && 
+            ($user->id === $strategy->user_id || $user->role === User::ROLE_ADMIN);
+    }
+
+    public function create(User $user)
+    {
+        return $user->can('manage_strategies');
+    }
+
+    public function update(User $user, TradingStrategy $strategy)
+    {
+        return $user->can('manage_strategies') && 
+            ($user->id === $strategy->user_id || $user->role === User::ROLE_ADMIN);
+    }
+
+    public function delete(User $user, TradingStrategy $strategy)
+    {
+        return $user->role === User::ROLE_ADMIN;
+    }
+
+    public function restore(User $user, TradingStrategy $strategy)
+    {
+        return $user->role === User::ROLE_ADMIN;
+    }
+
+    public function forceDelete(User $user, TradingStrategy $strategy)
+    {
+        return $user->role === User::ROLE_ADMIN;
     }
 }
 ```
 
-#### 2. Role & Permission System
+#### 2. Nova Role & Permission System
+
 ```php
-class RoleAndPermissionSeeder extends Seeder
+// app/Models/User.php
+class User extends Authenticatable
 {
-    public function run()
+    const ROLE_ADMIN = 'admin';
+    const ROLE_TRADER = 'trader';
+    const ROLE_VIEWER = 'viewer';
+
+    public function can($permission): bool
     {
-        // Create roles
-        Role::create(['name' => 'admin']);
-        Role::create(['name' => 'trader']);
-        Role::create(['name' => 'viewer']);
+        // Admin has all permissions
+        if ($this->email === 'ernesto@cobos.io') {
+            return true;
+        }
 
-        // Create permissions
-        Permission::create(['name' => 'trade']);
-        Permission::create(['name' => 'manage_strategies']);
-        Permission::create(['name' => 'view_portfolio']);
-        Permission::create(['name' => 'manage_users']);
+        // Role-based permissions
+        $permissions = [
+            self::ROLE_ADMIN => [
+                'manage_strategies',
+                'manage_trading_pairs',
+                'view_logs',
+                'view_analytics',
+            ],
+            self::ROLE_TRADER => [
+                'view_analytics',
+                'view_logs',
+            ],
+            self::ROLE_VIEWER => [
+                'view_analytics',
+            ],
+        ];
 
-        // Assign permissions to roles
-        Role::findByName('admin')->givePermissionTo(Permission::all());
-        Role::findByName('trader')->givePermissionTo(['trade', 'manage_strategies', 'view_portfolio']);
-        Role::findByName('viewer')->givePermissionTo(['view_portfolio']);
+        return in_array($permission, $permissions[$this->role] ?? []);
+    }
+}
+
+// database/migrations/2025_02_13_043338_add_role_to_users_table.php
+class AddRoleToUsersTable extends Migration
+{
+    public function up(): void
+    {
+        Schema::table('users', function (Blueprint $table) {
+            $table->string('role')->default('viewer');
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::table('users', function (Blueprint $table) {
+            $table->dropColumn('role');
+        });
+    }
+}
+
+// database/seeders/DatabaseSeeder.php
+class DatabaseSeeder extends Seeder
+{
+    public function run(): void
+    {
+        User::factory()->create([
+            'name' => 'Admin',
+            'email' => 'admin@midas.trade',
+            'role' => User::ROLE_ADMIN,
+        ]);
+
+        User::factory()->create([
+            'name' => 'Ernesto Cobos',
+            'email' => 'ernesto@cobos.io',
+            'password' => bcrypt('Aa121292#1221#'),
+            'role' => User::ROLE_ADMIN,
+        ]);
     }
 }
 ```

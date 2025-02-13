@@ -143,7 +143,191 @@ class DeepSeekConfig:
 ```
 
 ### Overview
-DeepSeek-R1 is integrated into our trading system to provide advanced market analysis, risk assessment, and decision validation. The AI model helps in identifying complex market patterns, validating trading decisions, and optimizing risk management parameters.
+DeepSeek-R1 is integrated into our trading system to provide advanced market analysis, risk assessment, and decision validation. The AI model helps in identifying complex market patterns, validating trading decisions, and optimizing risk management parameters. The integration is monitored and managed through Laravel Nova's admin interface.
+
+### Nova Integration
+
+#### 1. AI Performance Monitoring
+
+```php
+// app/Nova/Metrics/AIDecisionAccuracy.php
+class AIDecisionAccuracy extends Trend
+{
+    public function calculate(Request $request)
+    {
+        return $this->averageByDays($request, AIDecision::class, 'accuracy_score')
+            ->showLatestValue()
+            ->suffix('%');
+    }
+
+    public function ranges()
+    {
+        return [
+            'TODAY' => 'Today',
+            7 => '7 Days',
+            30 => '30 Days',
+            90 => '90 Days',
+        ];
+    }
+}
+
+// app/Nova/Metrics/AIResponseTime.php
+class AIResponseTime extends Value
+{
+    public function calculate(Request $request)
+    {
+        return $this->average(AIDecision::class, 'response_time')
+            ->suffix('ms')
+            ->help('Average AI response time in milliseconds');
+    }
+}
+
+// app/Nova/Metrics/AIDecisionDistribution.php
+class AIDecisionDistribution extends Partition
+{
+    public function calculate(Request $request)
+    {
+        return $this->count($request, AIDecision::class, 'decision_type')
+            ->label(function($value) {
+                return [
+                    'buy' => 'Buy Signals',
+                    'sell' => 'Sell Signals',
+                    'hold' => 'Hold Recommendations'
+                ][$value] ?? $value;
+            });
+    }
+}
+```
+
+#### 2. AI Monitoring Dashboard
+
+```php
+// app/Nova/Dashboards/AIMonitor.php
+class AIMonitor extends Dashboard
+{
+    public function name()
+    {
+        return 'AI Performance Monitor';
+    }
+
+    public function cards()
+    {
+        return [
+            new Metrics\AIDecisionAccuracy,
+            new Metrics\AIResponseTime,
+            new Metrics\AIDecisionDistribution,
+            new Metrics\AIErrorRate,
+            (new Metrics\AIUsageStats)->width('1/2'),
+            (new ResourceTable(new AIDecision))->width('1/2'),
+        ];
+    }
+}
+```
+
+#### 3. AI Decision Resource
+
+```php
+// app/Nova/AIDecision.php
+class AIDecision extends Resource
+{
+    public static $model = \App\Models\AIDecision::class;
+
+    public function fields(Request $request)
+    {
+        return [
+            ID::make()->sortable(),
+            BelongsTo::make('TradingPair'),
+            Select::make('Decision Type')
+                ->options([
+                    'buy' => 'Buy Signal',
+                    'sell' => 'Sell Signal',
+                    'hold' => 'Hold'
+                ])->displayUsingLabels(),
+            Number::make('Confidence Score')
+                ->min(0)
+                ->max(100)
+                ->step(0.01)
+                ->suffix('%'),
+            Number::make('Accuracy Score')
+                ->min(0)
+                ->max(100)
+                ->step(0.01)
+                ->suffix('%'),
+            Number::make('Response Time')
+                ->suffix('ms'),
+            Code::make('Analysis Data')->json(),
+            DateTime::make('Created At')->sortable(),
+        ];
+    }
+
+    public function cards(Request $request)
+    {
+        return [
+            new Metrics\DecisionAccuracyTrend,
+            new Metrics\ConfidenceDistribution,
+            new Metrics\DecisionImpact,
+        ];
+    }
+
+    public function actions(Request $request)
+    {
+        return [
+            new Actions\ValidateDecision,
+            new Actions\BacktestDecision,
+            new Actions\ExportDecisionData,
+        ];
+    }
+}
+```
+
+#### 4. AI Performance Actions
+
+```php
+// app/Nova/Actions/ValidateDecision.php
+class ValidateDecision extends Action
+{
+    public function handle(ActionFields $fields, Collection $models)
+    {
+        foreach ($models as $decision) {
+            dispatch(new ValidateAIDecisionJob($decision));
+        }
+
+        return Action::message('Decision validation initiated');
+    }
+}
+
+// app/Nova/Actions/OptimizeAIModel.php
+class OptimizeAIModel extends Action
+{
+    public function handle(ActionFields $fields, Collection $models)
+    {
+        dispatch(new OptimizeAIModelJob([
+            'training_period' => $fields->training_period,
+            'optimization_target' => $fields->optimization_target
+        ]));
+
+        return Action::message('AI model optimization scheduled');
+    }
+
+    public function fields(Request $request)
+    {
+        return [
+            Select::make('Training Period')
+                ->options([
+                    '7d' => 'Last 7 Days',
+                    '30d' => 'Last 30 Days',
+                    '90d' => 'Last 90 Days'
+                ]),
+            Select::make('Optimization Target')
+                ->options([
+                    'accuracy' => 'Decision Accuracy',
+                    'response_time' => 'Response Time',
+                    'balanced' => 'Balanced Performance'
+                ])
+        ];
+    }
+}
+```
 
 ### Core Functions
 

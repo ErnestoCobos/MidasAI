@@ -119,8 +119,12 @@ class DeepSeekService
         $this->model = config('services.deepseek.model');
     }
 
-    public function analyzeMarket(TradingPair $pair)
+    public function analyzeMarket(TradingPair $pair, User $user)
     {
+        if (!$user->can('view_analytics')) {
+            throw new AuthorizationException('You do not have permission to analyze market data.');
+        }
+
         $cacheKey = "market_analysis_{$pair->symbol}";
         
         return Cache::remember($cacheKey, $this->cacheTimeout, function () use ($pair) {
@@ -179,8 +183,12 @@ namespace App\Services\AI;
 
 class AIPerformanceTracker
 {
-    public function trackDecision(array $data)
+    public function trackDecision(array $data, User $user)
     {
+        if (!$user->can('manage_strategies')) {
+            throw new AuthorizationException('You do not have permission to track AI decisions.');
+        }
+
         return DB::table('ai_decisions')->insert([
             'trading_pair_id' => $data['pair_id'],
             'decision_type' => $data['type'],
@@ -191,8 +199,12 @@ class AIPerformanceTracker
         ]);
     }
 
-    public function getPerformanceMetrics()
+    public function getPerformanceMetrics(User $user)
     {
+        if (!$user->can('view_analytics')) {
+            throw new AuthorizationException('You do not have permission to view AI performance metrics.');
+        }
+
         return [
             'accuracy' => $this->calculateAccuracy(),
             'avg_confidence' => $this->calculateAverageConfidence(),
@@ -281,7 +293,10 @@ Provide:
 ### 1. Signal Generation
 1. Technical Analysis Signals
    ```python
-   def generate_technical_signals(data):
+   def generate_technical_signals(data, user):
+       if not user.can('view_analytics'):
+           raise AuthorizationException('You do not have permission to generate technical signals.')
+
        signals = {
            'rsi': analyze_rsi(data),
            'macd': analyze_macd(data),
@@ -293,14 +308,20 @@ Provide:
 
 2. Sentiment Integration
    ```python
-   def integrate_sentiment(technical_signals, sentiment_data):
+   def integrate_sentiment(technical_signals, sentiment_data, user):
+       if not user.can('view_analytics'):
+           raise AuthorizationException('You do not have permission to integrate sentiment data.')
+
        sentiment_score = analyze_sentiment(sentiment_data)
        return adjust_signals(technical_signals, sentiment_score)
    ```
 
 3. AI Validation
    ```python
-   def validate_with_ai(signals, market_data):
+   def validate_with_ai(signals, market_data, user):
+       if not user.can('view_analytics'):
+           raise AuthorizationException('You do not have permission to validate with AI.')
+
        analysis = deepseek_analyze(signals, market_data)
        return apply_ai_adjustments(signals, analysis)
    ```
@@ -341,25 +362,229 @@ Provide:
 
 ## Performance Metrics
 
-### 1. Strategy Performance
-- Win Rate: Target > 55%
-- Profit Factor: Target > 1.5
-- Sharpe Ratio: Target > 1.2
-- Maximum Drawdown: Limit < 15%
-- Recovery Factor: Target > 2.0
+### 1. Nova Strategy Performance Metrics
 
-### 2. Risk Metrics
-- Value at Risk (VaR)
-- Expected Shortfall
-- Beta to Market
-- Position Correlation
-- Exposure Ratios
+```php
+// app/Nova/Metrics/StrategyWinRate.php
+class StrategyWinRate extends Value
+{
+    public function calculate(Request $request)
+    {
+        if (!$request->user()->can('view_analytics')) {
+            return $this->result(0)->suffix('%');
+        }
 
-### 3. AI Performance
-- Decision Accuracy
-- Risk Assessment Accuracy
-- Signal Quality Score
-- Adaptation Speed
+        $total = Order::where('strategy_id', $request->resourceId)
+            ->whereNotNull('closed_at')
+            ->count();
+            
+        $wins = Order::where('strategy_id', $request->resourceId)
+            ->whereNotNull('closed_at')
+            ->where('profit_loss', '>', 0)
+            ->count();
+            
+        return $this->result(
+            $total > 0 ? round(($wins / $total) * 100, 2) : 0
+        )->suffix('%')
+         ->help('Target: > 55%');
+    }
+
+    public function authorizedToSee(Request $request)
+    {
+        return $request->user()->can('view_analytics');
+    }
+}
+
+// app/Nova/Metrics/ProfitFactor.php
+class ProfitFactor extends Value
+{
+    public function calculate(Request $request)
+    {
+        if (!$request->user()->can('view_analytics')) {
+            return $this->result(0);
+        }
+
+        $profits = Order::where('strategy_id', $request->resourceId)
+            ->where('profit_loss', '>', 0)
+            ->sum('profit_loss');
+            
+        $losses = abs(Order::where('strategy_id', $request->resourceId)
+            ->where('profit_loss', '<', 0)
+            ->sum('profit_loss'));
+            
+        return $this->result(
+            $losses > 0 ? round($profits / $losses, 2) : 0
+        )->help('Target: > 1.5');
+    }
+
+    public function authorizedToSee(Request $request)
+    {
+        return $request->user()->can('view_analytics');
+    }
+}
+
+// app/Nova/Metrics/SharpeRatio.php
+class SharpeRatio extends Value
+{
+    public function calculate(Request $request)
+    {
+        if (!$request->user()->can('view_analytics')) {
+            return $this->result(0);
+        }
+
+        return $this->result(
+            $this->calculateSharpeRatio($request->resourceId)
+        )->help('Target: > 1.2');
+    }
+
+    public function authorizedToSee(Request $request)
+    {
+        return $request->user()->can('view_analytics');
+    }
+}
+```
+
+### 2. Nova Risk Metrics
+
+```php
+// app/Nova/Metrics/ValueAtRisk.php
+class ValueAtRisk extends Value
+{
+    public function calculate(Request $request)
+    {
+        if (!$request->user()->can('view_analytics')) {
+            return $this->result(0)->currency('USD');
+        }
+
+        return $this->result(
+            $this->calculateVaR($request->resourceId)
+        )->currency('USD')
+         ->help('95% confidence interval');
+    }
+
+    public function authorizedToSee(Request $request)
+    {
+        return $request->user()->can('view_analytics');
+    }
+}
+
+// app/Nova/Metrics/PositionCorrelation.php
+class PositionCorrelation extends Partition
+{
+    public function calculate(Request $request)
+    {
+        if (!$request->user()->can('view_analytics')) {
+            return $this->result([]);
+        }
+
+        return $this->count($request, Position::class, 'correlation_group')
+            ->label(function($value) {
+                return [
+                    'high_positive' => '> 0.7',
+                    'moderate_positive' => '0.3 to 0.7',
+                    'low' => '-0.3 to 0.3',
+                    'moderate_negative' => '-0.7 to -0.3',
+                    'high_negative' => '< -0.7'
+                ][$value] ?? $value;
+            });
+    }
+
+    public function authorizedToSee(Request $request)
+    {
+        return $request->user()->can('view_analytics');
+    }
+}
+
+// app/Nova/Metrics/ExposureRatio.php
+class ExposureRatio extends Trend
+{
+    public function calculate(Request $request)
+    {
+        if (!$request->user()->can('view_analytics')) {
+            return $this->result([]);
+        }
+
+        return $this->averageByDays($request, PortfolioSnapshot::class, 'exposure_ratio')
+            ->suffix('%')
+            ->help('Portfolio exposure over time');
+    }
+
+    public function authorizedToSee(Request $request)
+    {
+        return $request->user()->can('view_analytics');
+    }
+}
+```
+
+### 3. Nova AI Performance Metrics
+
+```php
+// app/Nova/Metrics/AIDecisionAccuracy.php
+class AIDecisionAccuracy extends Trend
+{
+    public function calculate(Request $request)
+    {
+        if (!$request->user()->can('view_analytics')) {
+            return $this->result([]);
+        }
+
+        return $this->averageByDays($request, AIDecision::class, 'accuracy_score')
+            ->suffix('%')
+            ->help('AI decision accuracy trend');
+    }
+
+    public function authorizedToSee(Request $request)
+    {
+        return $request->user()->can('view_analytics');
+    }
+}
+
+// app/Nova/Metrics/SignalQualityScore.php
+class SignalQualityScore extends Partition
+{
+    public function calculate(Request $request)
+    {
+        if (!$request->user()->can('view_analytics')) {
+            return $this->result([]);
+        }
+
+        return $this->count($request, AIDecision::class, 'quality_score')
+            ->label(function($value) {
+                return [
+                    'high' => 'High Quality (> 80%)',
+                    'medium' => 'Medium Quality (50-80%)',
+                    'low' => 'Low Quality (< 50%)'
+                ][$value] ?? $value;
+            });
+    }
+
+    public function authorizedToSee(Request $request)
+    {
+        return $request->user()->can('view_analytics');
+    }
+}
+
+// app/Nova/Metrics/AdaptationSpeed.php
+class AdaptationSpeed extends Value
+{
+    public function calculate(Request $request)
+    {
+        if (!$request->user()->can('view_analytics')) {
+            return $this->result(0)->suffix('ms');
+        }
+
+        return $this->result(
+            $this->calculateAdaptationSpeed()
+        )->suffix('ms')
+         ->help('Average time to adapt to market changes');
+    }
+
+    public function authorizedToSee(Request $request)
+    {
+        return $request->user()->can('view_analytics');
+    }
+}
+```
 
 ## Continuous Improvement
 
@@ -383,79 +608,238 @@ Provide:
 
 ## Portfolio Optimization
 
-### 1. Modern Portfolio Theory Integration
-```php
-namespace App\Services\Trading;
+### 1. Nova Portfolio Optimization Tools
 
-class PortfolioOptimizer
+```php
+// app/Nova/Tools/PortfolioOptimizer.php
+class PortfolioOptimizer extends Tool
 {
-    protected $deepSeekService;
-    
-    public function optimizeAllocation(array $assets, array $constraints)
+    public function menu(Request $request)
     {
-        // Get AI analysis for each asset
-        $assetAnalysis = collect($assets)->map(function($asset) {
+        if (!$request->user()->can('manage_strategies')) {
+            return null;
+        }
+
+        return MenuItem::make('Portfolio Optimizer')
+            ->path('/portfolio-optimizer');
+    }
+
+    public function renderNavigation()
+    {
+        return view('nova.tools.portfolio-optimizer.navigation');
+    }
+
+    public function authorize(Request $request)
+    {
+        return $request->user()->can('manage_strategies');
+    }
+}
+
+// app/Nova/Actions/OptimizePortfolio.php
+class OptimizePortfolio extends Action
+{
+    public function handle(ActionFields $fields, Collection $models)
+    {
+        if (!$this->request->user()->can('manage_strategies')) {
+            return Action::danger('You do not have permission to optimize portfolios.');
+        }
+
+        $optimizer = new PortfolioOptimizer($this->deepSeekService);
+        
+        $result = $optimizer->optimizeAllocation(
+            assets: $models->toArray(),
+            constraints: [
+                'risk_tolerance' => $fields->risk_tolerance,
+                'min_position' => $fields->min_position,
+                'max_position' => $fields->max_position,
+                'target_return' => $fields->target_return
+            ]
+        );
+
+        return Action::message('Portfolio optimization completed')
+            ->openInNewTab(route('nova.portfolio-optimization-result', [
+                'id' => $result->id
+            ]));
+    }
+
+    public function fields(Request $request)
+    {
+        return [
+            Select::make('Risk Tolerance')
+                ->options([
+                    'conservative' => 'Conservative',
+                    'moderate' => 'Moderate',
+                    'aggressive' => 'Aggressive'
+                ])->required(),
+            Number::make('Min Position')
+                ->min(0)
+                ->max(100)
+                ->step(0.1)
+                ->suffix('%')
+                ->required(),
+            Number::make('Max Position')
+                ->min(0)
+                ->max(100)
+                ->step(0.1)
+                ->suffix('%')
+                ->required(),
+            Number::make('Target Return')
+                ->min(0)
+                ->step(0.1)
+                ->suffix('%')
+                ->required(),
+        ];
+    }
+}
+```
+
+### 2. Nova Risk-Adjusted Return Metrics
+
+```php
+// app/Nova/Metrics/RiskAdjustedReturns.php
+class RiskAdjustedReturns extends Partition
+{
+    public function calculate(Request $request)
+    {
+        if (!$request->user()->can('view_analytics')) {
+            return $this->result([]);
+        }
+
+        $portfolio = Portfolio::find($request->resourceId);
+        $metrics = new RiskAdjustedReturnCalculator($portfolio);
+        
+        return $this->result([
+            'sharpe_ratio' => $metrics->calculateSharpeRatio(),
+            'sortino_ratio' => $metrics->calculateSortinoRatio(),
+            'max_drawdown' => $metrics->calculateMaxDrawdown(),
+            'var_95' => $metrics->calculateValueAtRisk(0.95),
+            'expected_shortfall' => $metrics->calculateExpectedShortfall()
+        ])->label(function($metric, $value) {
+            return sprintf('%s: %.2f', Str::title(str_replace('_', ' ', $metric)), $value);
+        });
+    }
+}
+
+// app/Nova/Metrics/ReturnMetricsTrend.php
+class ReturnMetricsTrend extends Trend
+{
+    public function calculate(Request $request)
+    {
+        if (!$request->user()->can('view_analytics')) {
+            return $this->result([]);
+        }
+
+        return $this->multipleValues($request, function() {
             return [
-                'symbol' => $asset->symbol,
-                'analysis' => $this->deepSeekService->analyzeAsset($asset),
-                'metrics' => $this->calculateMetrics($asset)
+                'Sharpe Ratio' => $this->averageByDays(PortfolioSnapshot::class, 'sharpe_ratio'),
+                'Sortino Ratio' => $this->averageByDays(PortfolioSnapshot::class, 'sortino_ratio'),
+                'Information Ratio' => $this->averageByDays(PortfolioSnapshot::class, 'information_ratio')
             ];
         });
-
-        // Generate optimal portfolio allocation
-        $prompt = $this->formatOptimizationPrompt($assetAnalysis, $constraints);
-        $optimization = $this->deepSeekService->getCompletion([
-            ['role' => 'system', 'content' => 'You are an expert portfolio optimizer.'],
-            ['role' => 'user', 'content' => $prompt]
-        ]);
-
-        return $this->parseOptimization($optimization);
-    }
-
-    protected function calculateMetrics($asset)
-    {
-        return [
-            'returns' => $this->calculateReturns($asset),
-            'volatility' => $this->calculateVolatility($asset),
-            'sharpe_ratio' => $this->calculateSharpeRatio($asset),
-            'correlation_matrix' => $this->getCorrelationMatrix($asset)
-        ];
     }
 }
 ```
 
-### 2. Risk-Adjusted Returns
+### 3. Nova Portfolio Rebalancing Tools
+
 ```php
-class RiskAdjustedReturns
+// app/Nova/Tools/PortfolioRebalancer.php
+class PortfolioRebalancer extends Tool
 {
-    public function calculateMetrics(Portfolio $portfolio)
+    public function menu(Request $request)
+    {
+        if (!$request->user()->can('manage_strategies')) {
+            return null;
+        }
+
+        return MenuItem::make('Portfolio Rebalancer')
+            ->path('/portfolio-rebalancer');
+    }
+
+    public function cards()
     {
         return [
-            'sharpe_ratio' => $this->calculateSharpeRatio($portfolio),
-            'sortino_ratio' => $this->calculateSortinoRatio($portfolio),
-            'max_drawdown' => $this->calculateMaxDrawdown($portfolio),
-            'var_95' => $this->calculateValueAtRisk($portfolio, 0.95),
-            'expected_shortfall' => $this->calculateExpectedShortfall($portfolio)
+            new Metrics\AllocationDrift,
+            new Metrics\RebalancingImpact,
+            new Metrics\DriftTrend,
         ];
     }
-}
-```
 
-### 3. Dynamic Rebalancing
-```php
-class PortfolioRebalancer
-{
-    public function analyzeRebalancing(Portfolio $portfolio)
+    public function authorize(Request $request)
     {
-        $analysis = $this->deepSeekService->analyzePortfolio($portfolio);
+        return $request->user()->can('manage_strategies');
+    }
+}
+
+// app/Nova/Actions/RebalancePortfolio.php
+class RebalancePortfolio extends Action
+{
+    public function handle(ActionFields $fields, Collection $models)
+    {
+        if (!$this->request->user()->can('manage_strategies')) {
+            return Action::danger('You do not have permission to rebalance portfolios.');
+        }
+
+        $rebalancer = new PortfolioRebalancer($this->deepSeekService);
         
+        foreach ($models as $portfolio) {
+            $analysis = $rebalancer->analyzeRebalancing($portfolio);
+            
+            if ($analysis->requiresRebalancing()) {
+                dispatch(new RebalancePortfolioJob($portfolio, [
+                    'target_allocation' => $analysis->getTargetAllocation(),
+                    'rebalancing_method' => $fields->rebalancing_method,
+                    'drift_threshold' => $fields->drift_threshold
+                ]));
+            }
+        }
+
+        return Action::message('Portfolio rebalancing initiated');
+    }
+
+    public function fields(Request $request)
+    {
         return [
-            'current_allocation' => $portfolio->getCurrentAllocation(),
-            'target_allocation' => $analysis->getTargetAllocation(),
-            'drift_analysis' => $analysis->getDriftMetrics(),
-            'rebalancing_recommendations' => $analysis->getRecommendations(),
-            'expected_impact' => $analysis->getExpectedImpact()
+            Select::make('Rebalancing Method')
+                ->options([
+                    'threshold' => 'Threshold-based',
+                    'calendar' => 'Calendar-based',
+                    'hybrid' => 'Hybrid Approach'
+                ])->required(),
+            Number::make('Drift Threshold')
+                ->min(0)
+                ->max(100)
+                ->step(0.1)
+                ->suffix('%')
+                ->required()
+                ->help('Trigger rebalancing when allocation drifts beyond this threshold'),
         ];
+    }
+}
+
+// app/Nova/Metrics/AllocationDrift.php
+class AllocationDrift extends Partition
+{
+    public function calculate(Request $request)
+    {
+        if (!$request->user()->can('view_analytics')) {
+            return $this->result([]);
+        }
+
+        return $this->count($request, PortfolioAsset::class, 'drift_category')
+            ->label(function($value) {
+                return [
+                    'within_threshold' => '< 1%',
+                    'minor_drift' => '1-3%',
+                    'moderate_drift' => '3-5%',
+                    'significant_drift' => '> 5%'
+                ][$value] ?? $value;
+            });
+    }
+
+    public function authorizedToSee(Request $request)
+    {
+        return $request->user()->can('view_analytics');
     }
 }
 ```
@@ -473,8 +857,12 @@ class MarketPredictor
         'market_regime' => 0.3
     ];
 
-    public function generatePrediction(TradingPair $pair)
+    public function generatePrediction(TradingPair $pair, User $user)
     {
+        if (!$user->can('view_analytics')) {
+            throw new AuthorizationException('You do not have permission to generate market predictions.');
+        }
+
         $analysis = collect($this->factors)->map(function($weight, $factor) use ($pair) {
             return [
                 'factor' => $factor,
@@ -497,8 +885,12 @@ class MarketPredictor
 ```php
 class PatternRecognition
 {
-    public function identifyPatterns(TradingPair $pair)
+    public function identifyPatterns(TradingPair $pair, User $user)
     {
+        if (!$user->can('view_analytics')) {
+            throw new AuthorizationException('You do not have permission to analyze patterns.');
+        }
+
         $marketData = $pair->getMarketData();
         
         return $this->deepSeekService->analyzePatterns([
@@ -515,8 +907,12 @@ class PatternRecognition
 ```php
 class MarketRegimeDetector
 {
-    public function detectRegime(TradingPair $pair)
+    public function detectRegime(TradingPair $pair, User $user)
     {
+        if (!$user->can('view_analytics')) {
+            throw new AuthorizationException('You do not have permission to detect market regimes.');
+        }
+
         $analysis = $this->deepSeekService->analyzeMarketRegime([
             'volatility' => $pair->getVolatilityMetrics(),
             'trend_strength' => $pair->getTrendMetrics(),
@@ -538,8 +934,12 @@ class MarketRegimeDetector
 ```php
 class PredictionConfidence
 {
-    public function calculateConfidence(array $predictions)
+    public function calculateConfidence(array $predictions, User $user)
     {
+        if (!$user->can('view_analytics')) {
+            throw new AuthorizationException('You do not have permission to calculate prediction confidence.');
+        }
+
         return [
             'technical_confidence' => $this->scoreTechnicalFactors($predictions),
             'sentiment_confidence' => $this->scoreSentimentFactors($predictions),

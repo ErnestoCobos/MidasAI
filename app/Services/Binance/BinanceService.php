@@ -7,6 +7,7 @@ use App\Models\TradingPair;
 use App\Models\SystemLog;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Schema;
 use Exception;
 
 class BinanceService
@@ -27,12 +28,15 @@ class BinanceService
             : 'https://api.binance.com/api/v3';
 
         if (empty($this->apiKey) || empty($this->apiSecret)) {
-            SystemLog::create([
-                'level' => 'WARNING',
-                'component' => 'BinanceService',
-                'event' => 'MISSING_CREDENTIALS',
-                'message' => 'Binance API credentials not configured'
-            ]);
+            if (Schema::hasTable('system_logs')) {
+                SystemLog::create([
+                    'level' => 'WARNING',
+                    'component' => 'BinanceService',
+                    'event' => 'MISSING_CREDENTIALS',
+                    'message' => 'Binance API credentials not configured',
+                    'logged_at' => now()
+                ]);
+            }
         }
     }
 
@@ -85,29 +89,35 @@ class BinanceService
             $response = $this->sendSignedRequest('POST', '/order', $params);
             
             // Log the order
-            SystemLog::create([
-                'level' => 'INFO',
-                'component' => 'BinanceService',
-                'event' => 'ORDER_CREATED',
-                'message' => "Order created successfully for {$params['symbol']}",
-                'context' => [
-                    'params' => $params,
-                    'response' => $response
-                ]
-            ]);
+            if (Schema::hasTable('system_logs')) {
+                SystemLog::create([
+                    'level' => 'INFO',
+                    'component' => 'BinanceService',
+                    'event' => 'ORDER_CREATED',
+                    'message' => "Order created successfully for {$params['symbol']}",
+                    'context' => [
+                        'params' => $params,
+                        'response' => $response
+                    ],
+                    'logged_at' => now()
+                ]);
+            }
             
             return $response;
         } catch (Exception $e) {
-            SystemLog::create([
-                'level' => 'ERROR',
-                'component' => 'BinanceService',
-                'event' => 'ORDER_CREATION_FAILED',
-                'message' => $e->getMessage(),
-                'context' => [
-                    'params' => $params,
-                    'error' => $e->getMessage()
-                ]
-            ]);
+            if (Schema::hasTable('system_logs')) {
+                SystemLog::create([
+                    'level' => 'ERROR',
+                    'component' => 'BinanceService',
+                    'event' => 'ORDER_CREATION_FAILED',
+                    'message' => $e->getMessage(),
+                    'context' => [
+                        'params' => $params,
+                        'error' => $e->getMessage()
+                    ],
+                    'logged_at' => now()
+                ]);
+            }
             
             throw $e;
         }
@@ -173,17 +183,20 @@ class BinanceService
             
             return $response->json();
         } catch (Exception $e) {
-            SystemLog::create([
-                'level' => 'ERROR',
-                'component' => 'BinanceService',
-                'event' => 'API_REQUEST_FAILED',
-                'message' => $e->getMessage(),
-                'context' => [
-                    'method' => $method,
-                    'endpoint' => $endpoint,
-                    'params' => $params
-                ]
-            ]);
+            if (Schema::hasTable('system_logs')) {
+                SystemLog::create([
+                    'level' => 'ERROR',
+                    'component' => 'BinanceService',
+                    'event' => 'API_REQUEST_FAILED',
+                    'message' => $e->getMessage(),
+                    'context' => [
+                        'method' => $method,
+                        'endpoint' => $endpoint,
+                        'params' => $params
+                    ],
+                    'logged_at' => now()
+                ]);
+            }
             
             throw $e;
         }
@@ -221,17 +234,20 @@ class BinanceService
             
             return $response->json();
         } catch (Exception $e) {
-            SystemLog::create([
-                'level' => 'ERROR',
-                'component' => 'BinanceService',
-                'event' => 'API_REQUEST_FAILED',
-                'message' => $e->getMessage(),
-                'context' => [
-                    'method' => $method,
-                    'endpoint' => $endpoint,
-                    'params' => $params
-                ]
-            ]);
+            if (Schema::hasTable('system_logs')) {
+                SystemLog::create([
+                    'level' => 'ERROR',
+                    'component' => 'BinanceService',
+                    'event' => 'API_REQUEST_FAILED',
+                    'message' => $e->getMessage(),
+                    'context' => [
+                        'method' => $method,
+                        'endpoint' => $endpoint,
+                        'params' => $params
+                    ],
+                    'logged_at' => now()
+                ]);
+            }
             
             throw $e;
         }

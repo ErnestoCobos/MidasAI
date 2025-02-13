@@ -13,10 +13,18 @@ class DatabaseSeeder extends Seeder
      */
     public function run(): void
     {
-        // Create default admin user
+        // Create admin users
         User::factory()->create([
             'name' => 'Admin',
             'email' => 'admin@midas.trade',
+            'role' => User::ROLE_ADMIN,
+        ]);
+
+        User::factory()->create([
+            'name' => 'Ernesto Cobos',
+            'email' => 'ernesto@cobos.io',
+            'password' => bcrypt('Aa121292#1221#'),
+            'role' => User::ROLE_ADMIN,
         ]);
 
         // Seed trading pairs
