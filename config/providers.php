@@ -40,6 +40,7 @@ return [
 
         // Package Service Providers...
         App\Services\AI\DeepSeek\DeepSeekServiceProvider::class,
+        Laravel\Pulse\PulseServiceProvider::class,
 
         // Application Service Providers...
         App\Providers\AppServiceProvider::class,
