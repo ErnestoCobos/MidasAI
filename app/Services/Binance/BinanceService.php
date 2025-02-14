@@ -12,8 +12,8 @@ use Exception;
 
 class BinanceService
 {
-    protected string $apiKey;
-    protected string $apiSecret;
+    protected ?string $apiKey = null;
+    protected ?string $apiSecret = null;
     protected string $baseUrl;
     protected bool $testnet;
     protected int $recvWindow = 5000;
@@ -21,8 +21,8 @@ class BinanceService
     public function __construct()
     {
         $this->testnet = config('services.binance.testnet', true);
-        $this->apiKey = config('services.binance.key');
-        $this->apiSecret = config('services.binance.secret');
+        $this->apiKey = config('services.binance.key', '');
+        $this->apiSecret = config('services.binance.secret', '');
         $this->baseUrl = $this->testnet
             ? 'https://testnet.binance.vision/api/v3'
             : 'https://api.binance.com/api/v3';

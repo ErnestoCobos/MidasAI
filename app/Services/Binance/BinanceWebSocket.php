@@ -10,6 +10,8 @@ use Illuminate\Support\Facades\Http;
 
 class BinanceWebSocket
 {
+    protected ?string $apiKey = null;
+    protected ?string $apiSecret = null;
     protected string $baseUrl;
     protected bool $testnet;
     protected array $activeStreams = [];
@@ -19,9 +21,15 @@ class BinanceWebSocket
     public function __construct()
     {
         $this->testnet = config('services.binance.testnet', true);
+        $this->apiKey = config('services.binance.key', '');
+        $this->apiSecret = config('services.binance.secret', '');
         $this->baseUrl = $this->testnet
             ? 'https://testnet.binance.vision/api/v3'
             : 'https://api.binance.com/api/v3';
+
+        if (empty($this->apiKey) || empty($this->apiSecret)) {
+            throw new \Exception('Binance API credentials not configured. Please set BINANCE_API_KEY and BINANCE_API_SECRET in your .env file.');
+        }
     }
 
     /**
